@@ -32,7 +32,12 @@ Author: Claude Sonnet & Paul Collister, SV Sister Midnight, paul@collisters.com
 
 ## Resources
 
+- https://www.robot-electronics.co.uk/files/cmps12.pdf
 - [MCP4725 Datasheet (PDF)](https://cdn.sparkfun.com/datasheets/BreakoutBoards/MCP4725_2009.pdf)
+- https://www.sparkfun.com/sparkfun-i2c-dac-breakout-mcp4725.html
+- https://cdn.sparkfun.com/datasheets/BreakoutBoards/MCP4725_2009.pdf
+- file:///Users/Paulc/Downloads/bst-bno055-ds000.pdf
+- https://thepihut.com/products/raspberry-pi-pico-w?srsltid=AfmBOooGuRW-58-McknmdtbYEMGbDdnfv3R16uf0yszZ1yiBiJiKXnx8
 
 ## Getting Started
 
