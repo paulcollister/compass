@@ -1,8 +1,9 @@
 
 # DIY Marine Compass System
 
-This project replaces a faulty fluxgate compass on a Robertson Autohelm with a modern digital solution.
+This project replaces a faulty fluxgate compass on a Robertson AP1000 Autohelm with a modern digital solution.
 
+Author: Claude Sonnet & Paul Collister, SV Sister Midnight, paul@collisters.com
 ## Overview
 
 - **Sensor:** [CMPS12 digital compass module](https://www.robot-electronics.co.uk/cmps12.html)
@@ -45,3 +46,9 @@ This project replaces a faulty fluxgate compass on a Robertson Autohelm with a m
 
 - Use a dual DAC with reference input for improved analog output
 - Add web-based configuration and diagnostics
+
+
+## AI and other issues.
+This project was originally started without access to DACs, the MCP4922 is preferred. 
+AI (Claude sonnet 4) wrote most of the code and the docs.
+The docs refer to using PWM,  but the dacs used are on i2c. The basic Pi pico was chosen over the Pi zero in the end to improve on cost, and the pico is more suitable as a micronctroller with e2 prom
