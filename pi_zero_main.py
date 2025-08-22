@@ -10,6 +10,7 @@ import socket
 import RPi.GPIO as GPIO
 import time
 
+
 class CompassSystem:
     def __init__(self):
         self.i2c = smbus2.SMBus(1)  # CMPS12 I2C connection
