@@ -196,7 +196,7 @@ if __name__ == "__main__":
     compass = CompassPico()
     
     # Connect to WiFi (replace with your credentials)
-    if compass.connect_wifi("baba-40", "badbadbadface"):
+    if compass.connect_wifi("baba-40", "xxxxxxxx"):
         print("Starting compass system with WiFi")
     else:
         print("Starting compass system without WiFi")
