@@ -4,7 +4,7 @@ import time
 import network
 import socket
 import _thread
-from machine import Pin, I2C, PWM, SPI
+from machine import Pin, I2C, PWM
 import ujson
 
 led = Pin("LED", Pin.OUT)
@@ -56,10 +56,14 @@ class CompassPico:
         self.cmps12_addr = 0x60
         self.heading_buffer = []
 
-        # SPI setup for MCP4922 (sin/cos)
-        self.spi = SPI(0, baudrate=10000000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19))
-        self.cs = Pin(17, Pin.OUT)
-        self.cs.value(1)
+        # I2C1 setup for MCP4725 DACs (sin/cos)
+        self.i2c_dac = I2C(1, sda=Pin(2), scl=Pin(3), freq=400000)
+        self.dac_sin_addr = 0x60
+        self.dac_cos_addr = 0x61
+
+        # Initialize to 0° heading (North)
+        self.write_mcp4725(self.dac_sin_addr, 2048)  # mid-scale
+        self.write_mcp4725(self.dac_cos_addr, 4095)  # max-scale
 
         self.heading = 0.0
         self.wifi_connected = False
@@ -78,17 +82,15 @@ class CompassPico:
 
 
 
-
-    def write_mcp4922(self, channel, value):
-        """Write a 12-bit value to MCP4922 DAC. channel=0 for A (sin), 1 for B (cos), gain=2x"""
+    def write_mcp4725(self, addr, value):
+        """Write a 12-bit value to MCP4725 DAC at given address"""
         value = max(0, min(4095, int(value)))
-        # MCP4922: 16 bits: [C3 C2 C1 C0 D11 D10 D9 D8] [D7 D6 D5 D4 D3 D2 D1 D0]
-        # C3: 0=A, 1=B; C2: buffer=0; C1: gain=2x=0; C0: shutdown=active=1
-        cmd = (channel << 15) | (0 << 13) | (1 << 12) | (value << 0)
-        buf = bytearray([(cmd >> 8) & 0xFF, cmd & 0xFF])
-        self.cs.value(0)
-        self.spi.write(buf)
-        self.cs.value(1)
+        # MCP4725 expects: [C2 C1 C0 X X X X X] [D11 D10 D9 D8 D7 D6 D5 D4] [D3 D2 D1 D0 X X X X]
+        data = bytearray(3)
+        data[0] = 0x40  # Write DAC register
+        data[1] = (value >> 4) & 0xFF
+        data[2] = (value & 0x0F) << 4
+        self.i2c_dac.writeto(addr, data)
         
     def connect_wifi(self, ssid, password):
         """Connect to WiFi network"""
@@ -130,24 +132,21 @@ class CompassPico:
             return None
   
     def output_sin_cos(self, heading_deg):
-        """Output sin/cos as analog voltages via MCP4922 DAC (centered at 2.5V, ±2V swing, Vref=2.5V, gain=2x)"""
+        """Output sin/cos as analog voltages via MCP4725 DACs (0-3.3V)"""
         heading_rad = math.radians(heading_deg)
         sin_val = math.sin(heading_rad)
         cos_val = math.cos(heading_rad)
 
-        # For gain=2x, Vout = (code/4096)*2*Vref
-        # To get 0.5V to 4.5V (center 2.5V, swing ±2V):
-        # 0.5V = (code/4096)*5V  => code = 4096*0.5/5 = 410
-        # 2.5V = (code/4096)*5V  => code = 2048
-        # 4.5V = (code/4096)*5V  => code = 4096*4.5/5 = 3686
-        # So: code = 2048 + 1638 * value, value in -1..1
-        sin_dac = int(2048 + 1638 * sin_val)
-        cos_dac = int(2048 + 1638 * cos_val)
+        # Scale: -1..1 -> 0..4095 (12-bit DAC)
+        sin_dac = int(2048 + (2047 * sin_val))
+        cos_dac = int(2048 + (2047 * cos_val))
+
+        # Clamp
         sin_dac = max(0, min(4095, sin_dac))
         cos_dac = max(0, min(4095, cos_dac))
 
-        self.write_mcp4922(0, sin_dac)  # Channel A (sin)
-        self.write_mcp4922(1, cos_dac)  # Channel B (cos)
+        self.write_mcp4725(self.dac_sin_addr, sin_dac)
+        self.write_mcp4725(self.dac_cos_addr, cos_dac)
         
     def generate_nmea_hdt(self):
         """Generate NMEA HDT sentence"""
@@ -185,7 +184,7 @@ class CompassPico:
                         except Exception as send_err:
                             print(f"[NMEA] Send error: {send_err}")
                             break
-                        time.sleep(0.5)  # 1Hz NMEA rate
+                        time.sleep(1)  # 1Hz NMEA rate
 
                 except OSError as accept_err:
                     print(f"[NMEA] OSError in accept or client loop: {accept_err}")
