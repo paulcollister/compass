@@ -10,10 +10,49 @@ import ujson
 led = Pin("LED", Pin.OUT)
 
 class CompassPico:
+
+
+    def __init__(self):
+
+        print("---------------- CompassPico initialisation starting\n")
+        print("Details at: https://github.com/paulcollister/compass\n")
+        print("Copyright Paul Collister 2025\n\n")
+        self.abuff = bytearray(1)
+        self.bbuff = bytearray(1)
+        self.cbuff = bytearray(1)
+
+        # Add GP16 input pin
+        #self.gp16 = Pin(16, Pin.IN, Pin.PULL_UP)
+
+        # I2C setup for CMPS12
+        self.i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
+        self.cmps12_addr = 0x60
+        self.heading_buffer = []
+
+        # I2C setup for MCP4725 DACs (bus 1)
+        #self.i2c_dac = I2C(1, sda=Pin(2), scl=Pin(3), freq=400000)
+        #self.dac_sin_addr = 0x60
+        #self.dac_cos_addr = 0x61
+
+        # SPI setup for MCP4922 (sin/cos)
+        self.spi = SPI(0, baudrate=10000000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19))
+        self.cs = Pin(17, Pin.OUT, Pin.PULL_UP)
+        self.cs.value(1)
+
+        self.heading = 0.0
+        self.calibrated = 0  # 0=not calibrated, 1=calibrated
+        self.wifi_connected = False
+
+        sys, gyro, accel, mag = self.read_calibration_status()
+        print(f"Power Up State 1 = Calibration: (System:{sys} Gyro:{gyro} Accelerometer:{accel} Magnetometer:{mag})")
+        sys, gyro, accel, mag = self.read_calibration_status()
+        print(f"Power Up State 2 = Calibration: (System:{sys} Gyro:{gyro} Accelerometer:{accel} Magnetometer:{mag})")
+        print("---------------- CompassPico initialisation complete\n")
+
+    # ...existing code for calibration erase...
     def erase_cmps12_calibration(self):
         """Erase the stored calibration profile on the CMPS12 (write 0xE0, 0xE5, 0xE2 to 0x00 with 20ms delay)"""
         try:
-            #for b in [0xE0, 0xE5, 0xE2]:
             self.abuff[0] = 0xe0
             self.bbuff[0] = 0xe5
             self.cbuff[0] = 0xe2
@@ -31,65 +70,40 @@ class CompassPico:
         """Read and decode calibration status from CMPS12 register 0x1E, retry if 0xFF or error"""
         try:
             reg = self.i2c.readfrom_mem(self.cmps12_addr, 0x1E, 1)
-            print(f"CMPS12 calibration status register: {reg:08b}")
+            reg_val = reg[0]
+            #print(f"CMPS12 calibration status register: {reg_val:08b}")
             # Bits: [7:6]=sys, [5:4]=gyro, [3:2]=accel, [1:0]=mag
-            mag = reg & 0x03
-            sys = (reg >> 6) & 0x03
-            gyro = (reg >> 4) & 0x03
-            accel = (reg >> 2) & 0x03
+            mag = reg_val & 0x03
+            sys = (reg_val >> 6) & 0x03
+            gyro = (reg_val >> 4) & 0x03
+            accel = (reg_val >> 2) & 0x03
             return sys, gyro, accel, mag
         except Exception as e:
             print(f"Error: {e} CMPS12 not responding or calibration status invalid after retries.")
         return None, None, None, None
     
-    def __init__(self):
+    def save_calibration(self):
+        # To store a profile write the following to the command register 0xF0, 0xF5, 0xF6 with a 20ms delay
+        # after each of the three bytes.
+        self.i2c.writeto_mem(self.cmps12_addr, 0x00, b'\xF0')
+        time.sleep(0.02)
+        self.i2c.writeto_mem(self.cmps12_addr, 0x00, b'\xF5')
+        time.sleep(0.02)
+        self.i2c.writeto_mem(self.cmps12_addr, 0x00, b'\xF6')
+        time.sleep(0.02)
+        print("Calibration data saved ----------============--------------")
         
-        print("---------------- CompassPico initialisation starting\n")
-
-        self.abuff = bytearray(1)
-        self.bbuff = bytearray(1)
-        self.cbuff = bytearray(1)
-        
-
-        # I2C setup for CMPS12
-        self.i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
-        self.cmps12_addr = 0x60
-        self.heading_buffer = []
-
-        # SPI setup for MCP4922 (sin/cos)
-        self.spi = SPI(0, baudrate=10000000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19))
-        self.cs = Pin(17, Pin.OUT)
-        self.cs.value(1)
-
-        self.heading = 0.0
-        self.wifi_connected = False
-
-        # Erase calibration profile on startup
-        time.sleep(0.5)  # Ensure I2C is stable
-        self.erase_cmps12_calibration()
-        time.sleep(0.5)  # Wait after erase for device to reset
-        self.erase_cmps12_calibration()
-        time.sleep(0.5)  # Wait for device to reset
-        sys, gyro, accel, mag = self.read_calibration_status()
-        print(f"Power Up State 1 = Calibration: (System:{sys} Gyro:{gyro} Accelerometer:{accel} Magnetometer:{mag})")
-        sys, gyro, accel, mag = self.read_calibration_status()
-        print(f"Power Up State 2 = Calibration: (System:{sys} Gyro:{gyro} Accelerometer:{accel} Magnetometer:{mag})")
-        print("---------------- CompassPico initialisation complete\n")
-
-
-
-
     def write_mcp4922(self, channel, value):
         """Write a 12-bit value to MCP4922 DAC. channel=0 for A (sin), 1 for B (cos), gain=2x"""
         value = max(0, min(4095, int(value)))
-        # MCP4922: 16 bits: [C3 C2 C1 C0 D11 D10 D9 D8] [D7 D6 D5 D4 D3 D2 D1 D0]
-        # C3: 0=A, 1=B; C2: buffer=0; C1: gain=2x=0; C0: shutdown=active=1
-        cmd = (channel << 15) | (0 << 13) | (1 << 12) | (value << 0)
+        # MCP4922: [channel][buffer][gain][shutdown][D11..D0]
+        cmd = (channel << 15) | (0 << 14) | (0 << 13) | (1 << 12) | (value & 0xFFF)
         buf = bytearray([(cmd >> 8) & 0xFF, cmd & 0xFF])
         self.cs.value(0)
         self.spi.write(buf)
         self.cs.value(1)
-        
+        #print(f"MCP4922 write: channel={channel}, value={value}")
+
     def connect_wifi(self, ssid, password):
         """Connect to WiFi network"""
         wlan = network.WLAN(network.STA_IF)
@@ -113,7 +127,7 @@ class CompassPico:
         return True
         
     def read_cmps12(self):
-        """Read heading from CMPS12 and apply LPF over last 10 samples"""
+        """Read heading from CMPS12 and apply vector average over last 10 samples"""
         try:
             data = self.i2c.readfrom_mem(self.cmps12_addr, 0x02, 2)
             heading_raw = (data[0] << 8) | data[1]
@@ -122,13 +136,14 @@ class CompassPico:
             self.heading_buffer.append(self.heading)
             if len(self.heading_buffer) > 10:
                 self.heading_buffer.pop(0)
-            # Return average
-            #return sum(self.heading_buffer) / len(self.heading_buffer)
-            # or return raw
-            return self.heading
+            # Vector average
+            x = sum(math.cos(math.radians(h)) for h in self.heading_buffer) / len(self.heading_buffer)
+            y = sum(math.sin(math.radians(h)) for h in self.heading_buffer) / len(self.heading_buffer)
+            avg_heading = math.degrees(math.atan2(y, x)) % 360
+            return avg_heading
         except Exception:
             return None
-  
+
     def output_sin_cos(self, heading_deg):
         """Output sin/cos as analog voltages via MCP4922 DAC (centered at 2.5V, ±2V swing, Vref=2.5V, gain=2x)"""
         heading_rad = math.radians(heading_deg)
@@ -146,9 +161,32 @@ class CompassPico:
         sin_dac = max(0, min(4095, sin_dac))
         cos_dac = max(0, min(4095, cos_dac))
 
-        self.write_mcp4922(0, sin_dac)  # Channel A (sin)
-        self.write_mcp4922(1, cos_dac)  # Channel B (cos)
-        
+        self.write_mcp4922(1, sin_dac)  # Channel B (sin)
+        self.write_mcp4922(0, cos_dac)  # Channel A (cos)
+        #print(f"hdg: {heading_deg:.1f}, sin_dac/cos_dac = {sin_dac}, {cos_dac}")
+
+
+    def output_sin_cos_MCP4725(self, heading_deg):
+        """Output sin/cos as analog voltages via MCP4725 DACs on I2C(1)"""
+        heading_rad = math.radians(heading_deg)
+        sin_val = math.sin(heading_rad)
+        cos_val = math.cos(heading_rad)
+
+        # MCP4725 is a 12-bit DAC (0-4095), Vout = (value/4095) * Vcc
+        # Output range: 0V to Vcc (typically 3.3V)
+        # Center at 2048, amplitude ±1638 (40% of full scale)
+        sin_dac = int(2048 + 1638 * sin_val)
+        cos_dac = int(2048 + 1638 * cos_val)
+        # Clamp to valid range
+        sin_dac = max(0, min(4095, sin_dac))
+        cos_dac = max(0, min(4095, cos_dac))
+
+        # Write to MCP4725: [0x40, MSB, LSB]
+        sin_bytes = bytes([0x40, (sin_dac >> 4) & 0xFF, (sin_dac & 0x0F) << 4])
+        cos_bytes = bytes([0x40, (cos_dac >> 4) & 0xFF, (cos_dac & 0x0F) << 4])
+        self.i2c_dac.writeto(self.dac_sin_addr, sin_bytes)
+        self.i2c_dac.writeto(self.dac_cos_addr, cos_bytes)
+ 
     def generate_nmea_hdt(self):
         """Generate NMEA HDT sentence"""
         # hdg is integer of heading
@@ -190,10 +228,7 @@ class CompassPico:
                 except OSError as accept_err:
                     print(f"[NMEA] OSError in accept or client loop: {accept_err}")
                     if 'client' in locals():
-                        try:
-                            client.close()
-                        except:
-                            pass
+                        client.close()
                         print("NMEA client disconnected")
                     continue
                 except Exception as e:
@@ -206,21 +241,39 @@ class CompassPico:
         """Background compass reading loop"""
         led_count = 0
         while True:
+            #print ("Reading compass...start")
             heading = self.read_cmps12()
             if heading is not None:
+                #gp16_status = self.gp16.value()
+                #if gp16_status == 0 and self.calibrated == 0:
+                #    self.save_calibration()
+                #    self.calibrated = 1
+
+
                 self.output_sin_cos(heading)
+                #self.output_sin_cos_MCP4725(heading)
+
                 sys, gyro, accel, mag = self.read_calibration_status()
-                print(f"Heading: {heading:.1f} Deg Mag | Calib (SYS:{sys} G:{gyro} A:{accel} M:{mag})")
+                #print(f"Heading: {heading:.1f} Deg Mag | Calib (SYS:{sys} G:{gyro} A:{accel} M:{mag}) ")
+                #print(f"Heading: {heading:.1f} Deg Mag | Calib (SYS:{sys} G:{gyro} A:{accel} M:{mag}) | GP16: {gp16_status}")
+                #print(f"{heading:.1f}")
             
+            #print ("Reading compass...mid")
+
             time.sleep(0.1)  # 10Hz update rate
             # Here we toggle the Led on and off for 0.2 seconds on and 5 seconds off
-            if led_count  > 20:
+            if led_count  > 9:
                 led_count = 0;
+                #print("DEBUG: About to set LED ON")
                 led.value(1)
+                #print("DEBUG: LED ON set")
             else:
                 led_count += 1
                 if (led_count == 1):
+                    #print("DEBUG: About to set LED OFF")
                     led.value(0)   # Turn LED off
+                    #print("DEBUG: LED OFF set")
+            #print ("Reading compass...end") 
 
     def run(self):
         """Main application loop"""
@@ -233,7 +286,9 @@ class CompassPico:
         else:
             # If no WiFi, just keep main thread alive
             while True:
+                #print("No WiFi connection, running compass only..sleep 5 secs on main loop.")
                 time.sleep(5)
+                
 
 # Main execution
 if __name__ == "__main__":
@@ -249,3 +304,4 @@ if __name__ == "__main__":
     
     # Run the system
     compass.run()
+

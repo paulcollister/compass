@@ -1,0 +1,106 @@
+I built a compass using the CMPS12 module and a Raspberry PicoW to replace the faulty fluxgate compass on my Robertson AP1000 autopilot.
+
+It works well at the dock, and when I spin the compass around the autopilot seems happy to display the correct bearing from the compass. but in use at sea, it fails to track and sometimes displays the wrong value from the compass.
+
+I'm not using the 2.5v reference that was supplied to the old fluxgate, and I provide updates to the sin & cos outputs every 0.1 second, there is no persistence/low pass filter on the compass output.
+
+What could be wrong
+--------------------------------------------------
+
+Short answer: your AP1000 is expecting a very “analog-looking” fluxgate (sine & cosine centered on its **2.5 V reference**, with a **constant vector length** and **heavy smoothing**). Your Pico/CMPS12 output is digital-ish, stepwise, not referenced to the AP’s 2.5 V, and unfiltered—so it behaves at the dock, but goes sideways under motion, vibration, and magnetic noise at sea.
+
+Here’s what typically bites people in this conversion:
+
+## Likely causes
+1) **No 2.5 V reference bias**  
+   The AP1000’s fluxgate inputs are ratiometric to its **2.5 V REF**. Each channel should be ~2.5 V ± (some amplitude). If you don’t bias your sin/cos around that same reference (and share ground), the course computer’s A/D math is off—fine at dock (small movements), wrong at sea.
+
+2) **Wrong/variable amplitude (|sin,cos| not normalized)**  
+   A true fluxgate keeps √(sin²+cos²) ≈ constant. If you compute sin/cos and just scale them arbitrarily, the vector length wanders; the AP’s resolver math then produces heading errors, especially with noise.
+
+3) **No smoothing / rate limiting**  
+   A fluxgate is naturally low-pass. Your 10 Hz, step-updated outputs with **no RC or digital filter** look “jittery” to the AP. In waves/turns, the magnetometer also gets acceleration-induced noise; without filtering and a sane max heading rate, the AP can “hunt” or miscompute.
+
+4) **PWM without adequate filtering (if you used PWM as DAC)**  
+   Pico W has no true DAC. If you used PWM, you need a good RC (or op-amp Sallen–Key) low-pass. Otherwise the AP may sample ripple/steps. (Even if you used an external DAC, add output RC.)
+
+5) **Magnetic calibration / placement**  
+   Dock tests can pass even if the compass is near ferrous/ current-carrying cabling that only becomes “magnetic” under way (alternator/Bow thruster/windlass cables, autopilot pump motor). You need a proper 3D calibration (“swing”) and a clean mounting spot.
+
+6) **Dynamic acceleration**  
+   Many “tilt-compensated” compasses assume gravity is the only acceleration. In seaway, surge/heave corrupt the accel readings; without gyro fusion and filtering, the heading can jump.
+
+7) **Signal conditioning & impedance**  
+   The AP input expects a low-impedance, clean analog source. Driving it directly from a microcontroller/DAC pin without buffering can cause droop/phase errors.
+
+---
+
+## What to change (practical recipe)
+
+### A) Reference & scaling
+- **Use the AP’s 2.5 V REF** as your mid-rail for both channels.  
+- Generate:
+  ```
+  Vsin = 2.5 V + A * sin(θ)
+  Vcos = 2.5 V + A * cos(θ)
+  ```
+  Pick **A** to match the original fluxgate amplitude (often ~±1.0 V; check manual/scope your old sensor if possible).
+
+- **Normalize** the vector before output:
+  ```
+  s = sin(θ_raw); c = cos(θ_raw)
+  L = sqrt(s*s + c*c)            # avoid divide-by-zero
+  sN = s / L; cN = c / L         # constant vector length
+  Vsin = 2.5 + A * sN
+  Vcos = 2.5 + A * cN
+  ```
+
+### B) Filtering & rate limiting
+- Add **digital smoothing** to θ (or to sN/cN). Start with an exponential filter:
+  ```
+  θ_filt = θ_filt + α * angle_diff(θ_raw, θ_filt)
+  ```
+  with α ≈ (Δt / τ). For Δt=0.1 s, try **τ = 0.5–1.5 s** → α ≈ 0.07–0.18.
+
+- Also **limit heading rate**, e.g. max 20–30 °/s, so spikes don’t slam the AP.
+
+- Add **analog RC** on each output (e.g., 1–2 kΩ in series, 1–4.7 µF to ground) to kill DAC/PWM steps. Target cutoff ≈ 2–5 Hz.
+
+### C) Proper analog output
+- If you used PWM: switch to a small **dual DAC** (e.g., MCP4822/4922 SPI) or at least RC-filter the PWM heavily, then **buffer** each channel with a **rail-to-rail op-amp** (unity gain follower or gain stage to set A).
+- Share **grounds** and reference the op-amps to the **2.5 V REF** (virtual ground). Decouple generously (0.1 µF + 10 µF near DAC/op-amp).
+
+### D) Wiring/EMI
+- Use **twisted pairs** for each channel (Vsin–GND, Vcos–GND), keep them away from pump/alternator cables.  
+- Add small **RC snubbers** (e.g., 100 Ω + 10 nF) if you see high-frequency noise on a scope.
+
+### E) Calibration & placement
+- Mount the CMPS12 **away from steel** and high currents.  
+- Do a full **compass swing**/calibration with the boat away from docks and with typical loads running (alternator, pilothouse electronics).
+
+### F) Update cadence
+- 10 Hz is fine **if** you filter; otherwise, either filter or go up to 25–50 Hz with strong smoothing. The AP mostly cares about smoothness, not raw rate.
+
+---
+
+## How to verify (quick tests)
+1) **Scope it:** with AP powered, measure its 2.5 V REF, and your SIN/COS:
+   - centered at 2.5 V?  
+   - amplitude constant with heading?  
+   - smooth (no steps/ripple > a few mV)?  
+
+2) **Spin test with motion:** gently rock the sensor (simulate sea motion). If the outputs wobble at constant heading, your fusion/normalization/filtering needs work.
+
+3) **Sea trial with logging:** log raw magnetometer heading and the **final** θ_filt you send; compare against a handheld compass or GPS COG in steady conditions.
+
+---
+
+## If you want a simpler path
+- Some AP1000 setups can accept **NMEA-0183 HDG/HDM** instead of analog fluxgate. If your AP1000 supports it, feed the CMPS12 heading via RS-422 level NMEA at 4800 bps—skip the sin/cos analog entirely. (If not supported, stick to the analog plan above.)
+
+---
+
+## Minimal hardware sketch (if using a DAC)
+- CMPS12 → Pico W (I²C) → compute θ → filter → normalize  
+- Pico W → **dual DAC** (SPI) → two op-amp buffers centered at **AP 2.5 V REF** → AP SIN/COS inputs  
+- RC per channel to smooth
